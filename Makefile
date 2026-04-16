@@ -1,0 +1,60 @@
+CC      ?= gcc
+CXX     ?= g++
+PROTOC  ?= protoc
+
+CFLAGS   ?= -O2 -g
+CXXFLAGS ?= -O2 -g
+CFLAGS   += -Wall -Wextra -Werror -D_GNU_SOURCE -Isrc $(EXTRA_CFLAGS)
+CXXFLAGS += -Wall -Wextra -Werror -D_GNU_SOURCE -Isrc -Iproto -std=c++17 $(EXTRA_CXXFLAGS)
+LDFLAGS  += $(EXTRA_LDFLAGS)
+PROTO_LIBS ?= -lprotobuf -lpthread
+
+PROTO_SRC := proto/app.proto
+PROTO_CC  := proto/app.pb.cc
+PROTO_H   := proto/app.pb.h
+
+C_LIB_SRC   := src/ble_pack.c src/ble_reasm.c
+C_LIB_OBJ   := $(C_LIB_SRC:.c=.o)
+
+CXX_LIB_SRC := src/app_dispatch.cc $(PROTO_CC)
+CXX_LIB_OBJ := src/app_dispatch.o proto/app.pb.o
+
+TESTS_C   := tests/test_ble_pack tests/test_ble_reasm
+TESTS_CXX := tests/test_app_dispatch
+TESTS     := $(TESTS_C) $(TESTS_CXX)
+
+all: $(TESTS)
+
+# Generate protobuf C++ sources.
+$(PROTO_CC) $(PROTO_H): $(PROTO_SRC)
+	$(PROTOC) --cpp_out=proto --proto_path=proto $(PROTO_SRC)
+
+# Pure-C library objects.
+src/%.o: src/%.c
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+# C++ objects (depend on generated protobuf header).
+src/app_dispatch.o: src/app_dispatch.cc $(PROTO_H)
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
+proto/app.pb.o: $(PROTO_CC) $(PROTO_H)
+	$(CXX) $(CXXFLAGS) -c -o $@ $(PROTO_CC)
+
+# Pure-C tests link only C objects.
+tests/test_ble_pack: tests/test_ble_pack.c $(C_LIB_OBJ)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+
+tests/test_ble_reasm: tests/test_ble_reasm.c $(C_LIB_OBJ)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+
+# C++ test links the dispatch + protobuf objects and the C library.
+tests/test_app_dispatch: tests/test_app_dispatch.cc $(C_LIB_OBJ) $(CXX_LIB_OBJ) $(PROTO_H)
+	$(CXX) $(CXXFLAGS) -o $@ tests/test_app_dispatch.cc $(C_LIB_OBJ) $(CXX_LIB_OBJ) $(LDFLAGS) $(PROTO_LIBS)
+
+check: $(TESTS)
+	@for t in $(TESTS); do echo "== $$t =="; ./$$t || exit 1; done
+
+clean:
+	rm -f $(C_LIB_OBJ) $(CXX_LIB_OBJ) $(TESTS) $(PROTO_CC) $(PROTO_H)
+
+.PHONY: all check clean
