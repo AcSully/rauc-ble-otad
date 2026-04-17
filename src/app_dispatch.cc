@@ -58,3 +58,68 @@ extern "C" void ble_app_free(uint16_t /*type*/, void *msg)
 {
     delete static_cast<google::protobuf::MessageLite *>(msg);
 }
+
+/* ------------------------------------------------------------------ */
+/* C-accessible field getters for OTA messages                         */
+/* ------------------------------------------------------------------ */
+
+extern "C" const char *ble_app_ota_begin_filename(const void *msg)
+{
+    return static_cast<const ble::app::OtaBegin *>(msg)->filename().c_str();
+}
+
+extern "C" uint64_t ble_app_ota_begin_total_size(const void *msg)
+{
+    return static_cast<const ble::app::OtaBegin *>(msg)->total_size();
+}
+
+extern "C" uint32_t ble_app_ota_begin_chunk_size(const void *msg)
+{
+    return static_cast<const ble::app::OtaBegin *>(msg)->chunk_size();
+}
+
+extern "C" uint32_t ble_app_ota_chunk_seq(const void *msg)
+{
+    return static_cast<const ble::app::OtaChunk *>(msg)->seq();
+}
+
+extern "C" const uint8_t *ble_app_ota_chunk_data(const void *msg,
+                                                  size_t *out_len)
+{
+    const auto &d = static_cast<const ble::app::OtaChunk *>(msg)->data();
+    if (out_len) *out_len = d.size();
+    return reinterpret_cast<const uint8_t *>(d.data());
+}
+
+extern "C" uint64_t ble_app_ota_end_crc64(const void *msg)
+{
+    return static_cast<const ble::app::OtaEnd *>(msg)->crc64();
+}
+
+/* ------------------------------------------------------------------ */
+/* C-accessible message constructors for Ack responses                 */
+/* ------------------------------------------------------------------ */
+
+extern "C" void *ble_app_ota_begin_ack_new(int ok, const char *error)
+{
+    auto *m = new ble::app::OtaBeginAck();
+    m->set_ok(ok != 0);
+    if (error && error[0]) m->set_error(error);
+    return m;
+}
+
+extern "C" void *ble_app_ota_chunk_ack_new(uint32_t seq, int ok)
+{
+    auto *m = new ble::app::OtaChunkAck();
+    m->set_seq(seq);
+    m->set_ok(ok != 0);
+    return m;
+}
+
+extern "C" void *ble_app_ota_end_ack_new(int ok, const char *error)
+{
+    auto *m = new ble::app::OtaEndAck();
+    m->set_ok(ok != 0);
+    if (error && error[0]) m->set_error(error);
+    return m;
+}

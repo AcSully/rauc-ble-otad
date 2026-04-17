@@ -11,6 +11,7 @@
 #include "ble_reasm.h"
 #include "ble_pack.h"
 #include "app_dispatch.h"
+#include "ota_handler.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -49,6 +50,9 @@ static guint g_adv_reg;
 
 static struct ble_reasm_ctx g_reasm;
 static uint8_t g_reasm_buf[REASM_BUF_SIZE];
+
+/* OTA receive context */
+static struct ota_ctx *g_ota;
 
 /* TX notification state */
 static gboolean g_tx_notifying;
@@ -144,9 +148,56 @@ static void handle_message(const uint8_t *msg, uint32_t len)
 
     switch (type) {
     case BLE_APP_PING:
-        /* Reflect back as Pong with same payload. */
         send_response(BLE_APP_PONG, decoded);
         break;
+
+    case BLE_APP_OTA_BEGIN: {
+        int ok = 0;
+        const char *error = "";
+        ota_handle_begin(g_ota,
+                         ble_app_ota_begin_filename(decoded),
+                         ble_app_ota_begin_total_size(decoded),
+                         ble_app_ota_begin_chunk_size(decoded),
+                         &ok, &error);
+        void *ack = ble_app_ota_begin_ack_new(ok, error);
+        send_response(BLE_APP_OTA_BEGIN_ACK, ack);
+        ble_app_free(BLE_APP_OTA_BEGIN_ACK, ack);
+        break;
+    }
+
+    case BLE_APP_OTA_CHUNK: {
+        size_t data_len = 0;
+        const uint8_t *data = ble_app_ota_chunk_data(decoded, &data_len);
+        uint32_t ack_seq = 0;
+        int ok = 0;
+        ota_handle_chunk(g_ota,
+                         ble_app_ota_chunk_seq(decoded),
+                         data, data_len,
+                         &ack_seq, &ok);
+        void *ack = ble_app_ota_chunk_ack_new(ack_seq, ok);
+        send_response(BLE_APP_OTA_CHUNK_ACK, ack);
+        ble_app_free(BLE_APP_OTA_CHUNK_ACK, ack);
+        break;
+    }
+
+    case BLE_APP_OTA_END: {
+        int ok = 0;
+        const char *error = "";
+        ota_handle_end(g_ota,
+                       ble_app_ota_end_crc64(decoded),
+                       &ok, &error);
+        void *ack = ble_app_ota_end_ack_new(ok, error);
+        send_response(BLE_APP_OTA_END_ACK, ack);
+        ble_app_free(BLE_APP_OTA_END_ACK, ack);
+
+        if (ok) {
+            const char *path = ota_ctx_path(g_ota);
+            g_print("OTA complete: %s\n", path ? path : "(null)");
+            /* TODO: invoke RAUC D-Bus Install(path) here */
+        }
+        break;
+    }
+
     default:
         g_print("handle_message: unhandled type 0x%04x\n", type);
         break;
@@ -575,6 +626,13 @@ int gatt_server_start(GDBusConnection *conn, const char *adapter_path)
     /* Init reassembler */
     ble_reasm_init(&g_reasm, g_reasm_buf, sizeof(g_reasm_buf), 5000);
 
+    /* Init OTA handler — received files go to /tmp */
+    g_ota = ota_ctx_new("/tmp");
+    if (!g_ota) {
+        g_printerr("gatt_server: ota_ctx_new failed\n");
+        return -1;
+    }
+
     /* -- Register D-Bus objects ------------------------------------ */
 
     /* Application (ObjectManager) */
@@ -646,6 +704,9 @@ void gatt_server_stop(void)
     if (g_char_rx_reg) g_dbus_connection_unregister_object(g_conn, g_char_rx_reg);
     if (g_char_tx_reg) g_dbus_connection_unregister_object(g_conn, g_char_tx_reg);
     if (g_adv_reg)     g_dbus_connection_unregister_object(g_conn, g_adv_reg);
+
+    ota_ctx_free(g_ota);
+    g_ota = NULL;
 
     g_app_reg = g_svc_reg = g_char_rx_reg = g_char_tx_reg = g_adv_reg = 0;
     g_conn = NULL;

@@ -35,6 +35,26 @@ int ble_app_decode(const uint8_t *buf, size_t len,
 
 void ble_app_free(uint16_t type, void *msg);
 
+/* ---- C-accessible field getters for OTA messages ---- */
+
+/* OtaBegin fields */
+const char *ble_app_ota_begin_filename(const void *msg);
+uint64_t    ble_app_ota_begin_total_size(const void *msg);
+uint32_t    ble_app_ota_begin_chunk_size(const void *msg);
+
+/* OtaChunk fields */
+uint32_t    ble_app_ota_chunk_seq(const void *msg);
+const uint8_t *ble_app_ota_chunk_data(const void *msg, size_t *out_len);
+
+/* OtaEnd fields */
+uint64_t    ble_app_ota_end_crc64(const void *msg);
+
+/* ---- C-accessible message constructors for Ack responses ---- */
+
+void *ble_app_ota_begin_ack_new(int ok, const char *error);
+void *ble_app_ota_chunk_ack_new(uint32_t seq, int ok);
+void *ble_app_ota_end_ack_new(int ok, const char *error);
+
 #ifdef __cplusplus
 }
 #endif
