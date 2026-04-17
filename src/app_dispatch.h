@@ -9,8 +9,14 @@ extern "C" {
 #endif
 
 enum ble_app_type {
-    BLE_APP_PING = 0x0001,
-    BLE_APP_PONG = 0x0002,
+    BLE_APP_PING          = 0x0001,
+    BLE_APP_PONG          = 0x0002,
+    BLE_APP_OTA_BEGIN     = 0x0010,
+    BLE_APP_OTA_BEGIN_ACK = 0x0011,
+    BLE_APP_OTA_CHUNK     = 0x0012,
+    BLE_APP_OTA_CHUNK_ACK = 0x0013,
+    BLE_APP_OTA_END       = 0x0014,
+    BLE_APP_OTA_END_ACK   = 0x0015,
 };
 
 #define BLE_APP_TYPE_HDR_LEN 2u

@@ -8,8 +8,14 @@ namespace {
 google::protobuf::MessageLite *make_message(uint16_t type)
 {
     switch (type) {
-    case BLE_APP_PING: return new ble::app::Ping();
-    case BLE_APP_PONG: return new ble::app::Pong();
+    case BLE_APP_PING:          return new ble::app::Ping();
+    case BLE_APP_PONG:          return new ble::app::Pong();
+    case BLE_APP_OTA_BEGIN:     return new ble::app::OtaBegin();
+    case BLE_APP_OTA_BEGIN_ACK: return new ble::app::OtaBeginAck();
+    case BLE_APP_OTA_CHUNK:     return new ble::app::OtaChunk();
+    case BLE_APP_OTA_CHUNK_ACK: return new ble::app::OtaChunkAck();
+    case BLE_APP_OTA_END:       return new ble::app::OtaEnd();
+    case BLE_APP_OTA_END_ACK:   return new ble::app::OtaEndAck();
     default: return nullptr;
     }
 }

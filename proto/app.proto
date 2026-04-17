@@ -9,3 +9,41 @@ message Ping {
 message Pong {
     uint64 nonce = 1;
 }
+
+/* ---- OTA transfer protocol ---- */
+
+// Phone → board: start a new OTA transfer.
+message OtaBegin {
+    string filename = 1;     // e.g. "rootfs.castr/0065/0065db...cacnk"
+    uint64 total_size = 2;   // total file size in bytes
+    uint32 chunk_size = 3;   // max payload per OtaChunk (e.g. 4096)
+}
+
+// Board → phone: ack OtaBegin.
+message OtaBeginAck {
+    bool   ok = 1;
+    string error = 2;        // non-empty on failure
+}
+
+// Phone → board: one slice of the file.
+message OtaChunk {
+    uint32 seq = 1;          // 0-based sequence number
+    bytes  data = 2;         // chunk payload (up to chunk_size)
+}
+
+// Board → phone: ack a chunk (or request retransmit).
+message OtaChunkAck {
+    uint32 seq = 1;          // sequence that was received
+    bool   ok = 2;
+}
+
+// Phone → board: transfer complete.
+message OtaEnd {
+    uint64 crc64 = 1;        // optional whole-file checksum
+}
+
+// Board → phone: final status.
+message OtaEndAck {
+    bool   ok = 1;
+    string error = 2;
+}

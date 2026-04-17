@@ -9,6 +9,11 @@ CXXFLAGS += -Wall -Wextra -Werror -D_GNU_SOURCE -Isrc -Iproto -std=c++17 $(EXTRA
 LDFLAGS  += $(EXTRA_LDFLAGS)
 PROTO_LIBS ?= -lprotobuf -lpthread
 
+# GLib/GIO flags for the daemon (override GLIB_CFLAGS / GLIB_LIBS to
+# skip pkg-config when cross-compiling).
+GLIB_CFLAGS ?= $(shell pkg-config --cflags glib-2.0 gio-2.0 2>/dev/null)
+GLIB_LIBS   ?= $(shell pkg-config --libs   glib-2.0 gio-2.0 2>/dev/null)
+
 PROTO_SRC := proto/app.proto
 PROTO_CC  := proto/app.pb.cc
 PROTO_H   := proto/app.pb.h
@@ -19,11 +24,15 @@ C_LIB_OBJ   := $(C_LIB_SRC:.c=.o)
 CXX_LIB_SRC := src/app_dispatch.cc $(PROTO_CC)
 CXX_LIB_OBJ := src/app_dispatch.o proto/app.pb.o
 
+DAEMON_SRC  := src/main.c src/gatt_server.c
+DAEMON_OBJ  := src/main.o src/gatt_server.o
+DAEMON      := rauc-ble-otad
+
 TESTS_C   := tests/test_ble_pack tests/test_ble_reasm
 TESTS_CXX := tests/test_app_dispatch
 TESTS     := $(TESTS_C) $(TESTS_CXX)
 
-all: $(TESTS)
+all: $(TESTS) $(DAEMON)
 
 # Generate protobuf C++ sources.
 $(PROTO_CC) $(PROTO_H): $(PROTO_SRC)
@@ -40,6 +49,17 @@ src/app_dispatch.o: src/app_dispatch.cc $(PROTO_H)
 proto/app.pb.o: $(PROTO_CC) $(PROTO_H)
 	$(CXX) $(CXXFLAGS) -c -o $@ $(PROTO_CC)
 
+# Daemon objects need GLib/GIO headers.
+src/gatt_server.o: src/gatt_server.c src/gatt_server.h
+	$(CC) $(CFLAGS) $(GLIB_CFLAGS) -c -o $@ $<
+
+src/main.o: src/main.c src/gatt_server.h
+	$(CC) $(CFLAGS) $(GLIB_CFLAGS) -c -o $@ $<
+
+# Daemon binary: C lib + C++ dispatch + GLib + protobuf.
+$(DAEMON): $(DAEMON_OBJ) $(C_LIB_OBJ) $(CXX_LIB_OBJ) $(PROTO_H)
+	$(CXX) $(CXXFLAGS) -o $@ $(DAEMON_OBJ) $(C_LIB_OBJ) $(CXX_LIB_OBJ) $(LDFLAGS) $(GLIB_LIBS) $(PROTO_LIBS)
+
 # Pure-C tests link only C objects.
 tests/test_ble_pack: tests/test_ble_pack.c $(C_LIB_OBJ)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
@@ -55,6 +75,6 @@ check: $(TESTS)
 	@for t in $(TESTS); do echo "== $$t =="; ./$$t || exit 1; done
 
 clean:
-	rm -f $(C_LIB_OBJ) $(CXX_LIB_OBJ) $(TESTS) $(PROTO_CC) $(PROTO_H)
+	rm -f $(C_LIB_OBJ) $(CXX_LIB_OBJ) $(DAEMON_OBJ) $(TESTS) $(DAEMON) $(PROTO_CC) $(PROTO_H)
 
 .PHONY: all check clean
