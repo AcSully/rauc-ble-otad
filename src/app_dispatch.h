@@ -9,51 +9,57 @@ extern "C" {
 #endif
 
 enum ble_app_type {
-    BLE_APP_PING          = 0x0001,
-    BLE_APP_PONG          = 0x0002,
-    BLE_APP_OTA_BEGIN     = 0x0010,
-    BLE_APP_OTA_BEGIN_ACK = 0x0011,
-    BLE_APP_OTA_CHUNK     = 0x0012,
-    BLE_APP_OTA_CHUNK_ACK = 0x0013,
-    BLE_APP_OTA_END       = 0x0014,
-    BLE_APP_OTA_END_ACK   = 0x0015,
+    BLE_APP_PING               = 0x0001,
+    BLE_APP_PONG               = 0x0002,
+    BLE_APP_OTA_BEGIN          = 0x0010,
+    BLE_APP_OTA_BEGIN_ACK      = 0x0011,
+    BLE_APP_OTA_CHUNK          = 0x0012,
+    BLE_APP_OTA_CHUNK_ACK      = 0x0013,
+    BLE_APP_OTA_END            = 0x0014,
+    BLE_APP_OTA_END_ACK        = 0x0015,
+    BLE_APP_GET_VERSION        = 0x0020,
+    BLE_APP_VERSION_REPLY      = 0x0021,
+    BLE_APP_MISSING_CHUNKS     = 0x0022,
+    BLE_APP_OTA_INSTALL        = 0x0023,
+    BLE_APP_OTA_INSTALL_REPLY  = 0x0024,
 };
 
 #define BLE_APP_TYPE_HDR_LEN 2u
 
-/* Serialize an application message into out:
- *   TYPE_HI | TYPE_LO | protobuf_data
- * msg must point to the matching C++ protobuf object for `type`.
- * Returns 0 on success. */
 int ble_app_encode(uint16_t type, const void *msg,
                    uint8_t *out, size_t out_cap, size_t *out_len);
 
-/* Parse a delivered payload into (type, msg). On success *out_msg is a
- * newly allocated protobuf object owned by the caller; free with ble_app_free. */
 int ble_app_decode(const uint8_t *buf, size_t len,
                    uint16_t *out_type, void **out_msg);
 
 void ble_app_free(uint16_t type, void *msg);
 
-/* ---- C-accessible field getters for OTA messages ---- */
+/* Protobuf serialized size (app payload, including 2-byte type header). */
+size_t ble_app_encoded_size(uint16_t type, const void *msg);
 
-/* OtaBegin fields */
+/* ---- C-accessible field getters ---- */
+
 const char *ble_app_ota_begin_filename(const void *msg);
 uint64_t    ble_app_ota_begin_total_size(const void *msg);
 uint32_t    ble_app_ota_begin_chunk_size(const void *msg);
 
-/* OtaChunk fields */
 uint32_t    ble_app_ota_chunk_seq(const void *msg);
 const uint8_t *ble_app_ota_chunk_data(const void *msg, size_t *out_len);
 
-/* OtaEnd fields */
 uint64_t    ble_app_ota_end_crc64(const void *msg);
 
-/* ---- C-accessible message constructors for Ack responses ---- */
+const uint8_t *ble_app_ota_install_sha256(const void *msg, size_t *out_len);
+
+/* ---- C-accessible message constructors ---- */
 
 void *ble_app_ota_begin_ack_new(int ok, const char *error);
 void *ble_app_ota_chunk_ack_new(uint32_t seq, int ok);
 void *ble_app_ota_end_ack_new(int ok, const char *error);
+
+void *ble_app_version_reply_new(const char *version);
+void *ble_app_missing_chunks_new(int ok, const char *error,
+                                 const uint8_t *content, size_t content_len);
+void *ble_app_ota_install_reply_new(int ok, const char *error);
 
 #ifdef __cplusplus
 }

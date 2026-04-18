@@ -24,8 +24,8 @@ C_LIB_OBJ   := $(C_LIB_SRC:.c=.o)
 CXX_LIB_SRC := src/app_dispatch.cc $(PROTO_CC)
 CXX_LIB_OBJ := src/app_dispatch.o proto/app.pb.o
 
-DAEMON_SRC  := src/main.c src/gatt_server.c src/ota_handler.c
-DAEMON_OBJ  := src/main.o src/gatt_server.o src/ota_handler.o
+DAEMON_SRC  := src/main.c src/gatt_server.c src/ota_handler.c src/firmware_version.c src/casync_runner.c
+DAEMON_OBJ  := src/main.o src/gatt_server.o src/ota_handler.o src/firmware_version.o src/casync_runner.o
 DAEMON      := rauc-ble-otad
 
 TESTS_C   := tests/test_ble_pack tests/test_ble_reasm
@@ -50,11 +50,17 @@ proto/app.pb.o: $(PROTO_CC) $(PROTO_H)
 	$(CXX) $(CXXFLAGS) -c -o $@ $(PROTO_CC)
 
 # Daemon objects need GLib/GIO headers.
-src/gatt_server.o: src/gatt_server.c src/gatt_server.h src/ota_handler.h
+src/gatt_server.o: src/gatt_server.c src/gatt_server.h src/ota_handler.h src/firmware_version.h src/casync_runner.h
 	$(CC) $(CFLAGS) $(GLIB_CFLAGS) -c -o $@ $<
 
 src/ota_handler.o: src/ota_handler.c src/ota_handler.h
 	$(CC) $(CFLAGS) -c -o $@ $<
+
+src/firmware_version.o: src/firmware_version.c src/firmware_version.h
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+src/casync_runner.o: src/casync_runner.c src/casync_runner.h
+	$(CC) $(CFLAGS) $(GLIB_CFLAGS) -c -o $@ $<
 
 src/main.o: src/main.c src/gatt_server.h
 	$(CC) $(CFLAGS) $(GLIB_CFLAGS) -c -o $@ $<

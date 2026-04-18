@@ -1,9 +1,5 @@
 /*
  * ota_handler.c -- OTA file-receive state machine
- *
- * Manages the lifecycle of a single OTA transfer: OtaBegin opens a
- * file, OtaChunk appends data, OtaEnd closes and optionally verifies
- * a CRC-64.  Only one transfer may be active at a time.
  */
 
 #include "ota_handler.h"
@@ -12,6 +8,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 enum ota_state {
     OTA_IDLE,
@@ -22,6 +20,7 @@ enum ota_state {
 struct ota_ctx {
     char        *dest_dir;
     char        *file_path;
+    char        *last_filename;
     FILE        *fp;
     enum ota_state state;
     uint64_t    total_size;
@@ -30,29 +29,55 @@ struct ota_ctx {
     uint64_t    bytes_written;
 };
 
-/* ------------------------------------------------------------------ */
-/* Helpers                                                             */
-/* ------------------------------------------------------------------ */
+static int char_ok(char c)
+{
+    if (c >= 'a' && c <= 'z') return 1;
+    if (c >= 'A' && c <= 'Z') return 1;
+    if (c >= '0' && c <= '9') return 1;
+    return c == '.' || c == '_' || c == '-' || c == '/';
+}
 
-/* Sanitise a filename coming from the phone: reject path separators
- * and empty strings so we never write outside dest_dir. */
 static int filename_ok(const char *name)
 {
     if (!name || name[0] == '\0') return 0;
-    if (strchr(name, '/'))  return 0;
-    if (strchr(name, '\\')) return 0;
-    if (name[0] == '.')     return 0;  /* no hidden / dot-dot */
+    if (name[0] == '/' || name[0] == '.') return 0;
+    const char *p = name;
+    while (*p) {
+        if (!char_ok(*p)) return 0;
+        if (p[0] == '.' && p[1] == '.' &&
+            (p[2] == '\0' || p[2] == '/')) return 0;
+        if (p[0] == '/' && p[1] == '/') return 0;
+        p++;
+    }
+    if (p > name && p[-1] == '/') return 0;
     return 1;
+}
+
+static int ensure_parent_dirs(const char *path)
+{
+    char *dup = strdup(path);
+    if (!dup) return -1;
+    int rc = 0;
+    for (char *p = dup + 1; *p; p++) {
+        if (*p == '/') {
+            *p = '\0';
+            if (mkdir(dup, 0755) != 0 && errno != EEXIST) {
+                fprintf(stderr, "ota: mkdir %s: %s\n", dup, strerror(errno));
+                rc = -1;
+                break;
+            }
+            *p = '/';
+        }
+    }
+    free(dup);
+    return rc;
 }
 
 static void reset_transfer(struct ota_ctx *ctx)
 {
-    if (ctx->fp) {
-        fclose(ctx->fp);
-        ctx->fp = NULL;
-    }
-    free(ctx->file_path);
-    ctx->file_path     = NULL;
+    if (ctx->fp) { fclose(ctx->fp); ctx->fp = NULL; }
+    free(ctx->file_path);     ctx->file_path     = NULL;
+    free(ctx->last_filename); ctx->last_filename = NULL;
     ctx->state         = OTA_IDLE;
     ctx->total_size    = 0;
     ctx->chunk_size    = 0;
@@ -60,20 +85,13 @@ static void reset_transfer(struct ota_ctx *ctx)
     ctx->bytes_written = 0;
 }
 
-/* ------------------------------------------------------------------ */
-/* Public API                                                          */
-/* ------------------------------------------------------------------ */
-
 struct ota_ctx *ota_ctx_new(const char *dest_dir)
 {
     if (!dest_dir) return NULL;
-
     struct ota_ctx *ctx = calloc(1, sizeof(*ctx));
     if (!ctx) return NULL;
-
     ctx->dest_dir = strdup(dest_dir);
     if (!ctx->dest_dir) { free(ctx); return NULL; }
-
     ctx->state = OTA_IDLE;
     return ctx;
 }
@@ -86,8 +104,6 @@ void ota_ctx_free(struct ota_ctx *ctx)
     free(ctx);
 }
 
-/* ---- OtaBegin ---------------------------------------------------- */
-
 void ota_handle_begin(struct ota_ctx *ctx,
                       const char *filename,
                       uint64_t total_size,
@@ -99,34 +115,30 @@ void ota_handle_begin(struct ota_ctx *ctx,
 
     if (!ctx) { *error = "no ota context"; return; }
 
-    /* If a previous transfer was in progress, abort it. */
     if (ctx->state == OTA_RECEIVING) {
         fprintf(stderr, "ota: aborting previous transfer\n");
         reset_transfer(ctx);
+    } else if (ctx->state == OTA_DONE) {
+        reset_transfer(ctx);
     }
 
-    if (!filename_ok(filename)) {
-        *error = "invalid filename";
-        return;
-    }
-    if (total_size == 0) {
-        *error = "total_size is zero";
-        return;
-    }
-    if (chunk_size == 0) {
-        *error = "chunk_size is zero";
-        return;
-    }
+    if (!filename_ok(filename)) { *error = "invalid filename"; return; }
+    if (total_size == 0)        { *error = "total_size is zero"; return; }
+    if (chunk_size == 0)        { *error = "chunk_size is zero"; return; }
 
-    /* Build destination path: dest_dir/filename */
     size_t dir_len  = strlen(ctx->dest_dir);
     size_t name_len = strlen(filename);
-    /* +2 for '/' and '\0' */
     char *path = malloc(dir_len + 1 + name_len + 1);
     if (!path) { *error = "out of memory"; return; }
     memcpy(path, ctx->dest_dir, dir_len);
     path[dir_len] = '/';
     memcpy(path + dir_len + 1, filename, name_len + 1);
+
+    if (ensure_parent_dirs(path) != 0) {
+        free(path);
+        *error = "cannot create parent dir";
+        return;
+    }
 
     FILE *fp = fopen(path, "wb");
     if (!fp) {
@@ -137,6 +149,7 @@ void ota_handle_begin(struct ota_ctx *ctx,
     }
 
     ctx->file_path     = path;
+    ctx->last_filename = strdup(filename);
     ctx->fp            = fp;
     ctx->total_size    = total_size;
     ctx->chunk_size    = chunk_size;
@@ -149,8 +162,6 @@ void ota_handle_begin(struct ota_ctx *ctx,
 
     *ok = 1;
 }
-
-/* ---- OtaChunk ---------------------------------------------------- */
 
 void ota_handle_chunk(struct ota_ctx *ctx,
                       uint32_t seq,
@@ -167,13 +178,11 @@ void ota_handle_chunk(struct ota_ctx *ctx,
                 ctx->next_seq, seq);
         return;
     }
-
     if (data_len == 0 || data_len > ctx->chunk_size) {
         fprintf(stderr, "ota: bad chunk len %zu (chunk_size %u)\n",
                 data_len, ctx->chunk_size);
         return;
     }
-
     if (ctx->bytes_written + data_len > ctx->total_size) {
         fprintf(stderr, "ota: data exceeds total_size\n");
         return;
@@ -190,23 +199,19 @@ void ota_handle_chunk(struct ota_ctx *ctx,
     *ok = 1;
 }
 
-/* ---- OtaEnd ------------------------------------------------------ */
-
 void ota_handle_end(struct ota_ctx *ctx,
                     uint64_t crc64,
                     int *ok, const char **error)
 {
     *ok    = 0;
     *error = "";
-
-    (void)crc64;  /* TODO: CRC-64 verification */
+    (void)crc64;
 
     if (!ctx || ctx->state != OTA_RECEIVING) {
         *error = "no active transfer";
         return;
     }
 
-    /* Flush and close the file. */
     if (fclose(ctx->fp) != 0) {
         fprintf(stderr, "ota: fclose error: %s\n", strerror(errno));
         ctx->fp = NULL;
@@ -218,8 +223,7 @@ void ota_handle_end(struct ota_ctx *ctx,
 
     if (ctx->bytes_written != ctx->total_size) {
         fprintf(stderr, "ota: size mismatch: got %lu expected %lu\n",
-                (unsigned long)ctx->bytes_written,
-                (unsigned long)ctx->total_size);
+                (unsigned long)ctx->bytes_written, (unsigned long)ctx->total_size);
         *error = "size mismatch";
         ctx->state = OTA_IDLE;
         return;
@@ -228,7 +232,6 @@ void ota_handle_end(struct ota_ctx *ctx,
     ctx->state = OTA_DONE;
     fprintf(stderr, "ota: transfer complete: %s (%lu bytes)\n",
             ctx->file_path, (unsigned long)ctx->bytes_written);
-
     *ok = 1;
 }
 
@@ -236,4 +239,10 @@ const char *ota_ctx_path(const struct ota_ctx *ctx)
 {
     if (!ctx || ctx->state != OTA_DONE) return NULL;
     return ctx->file_path;
+}
+
+const char *ota_ctx_filename(const struct ota_ctx *ctx)
+{
+    if (!ctx || ctx->state != OTA_DONE) return NULL;
+    return ctx->last_filename;
 }

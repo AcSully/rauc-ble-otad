@@ -12,8 +12,11 @@
 #include "ble_pack.h"
 #include "app_dispatch.h"
 #include "ota_handler.h"
+#include "firmware_version.h"
+#include "casync_runner.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* ------------------------------------------------------------------ */
@@ -109,20 +112,29 @@ static void tx_notify(const uint8_t *pdu, size_t len)
     }
 }
 
-/* Pack and send a response message as notifications on TX char. */
+/* Pack and send a response message as notifications on TX char.
+ * Uses dynamic allocation so payloads up to a few MB (e.g. MissingChunks)
+ * are fine; small messages still go through with one small malloc. */
 static void send_response(uint16_t type, const void *msg)
 {
-    uint8_t enc_buf[4096];
-    size_t enc_len = 0;
+    size_t needed = ble_app_encoded_size(type, msg);
+    if (needed == 0) {
+        g_printerr("send_response: empty encoded size\n");
+        return;
+    }
 
-    if (ble_app_encode(type, msg, enc_buf, sizeof(enc_buf), &enc_len) != 0) {
+    uint8_t *enc_buf = g_malloc(needed);
+    size_t enc_len = 0;
+    if (ble_app_encode(type, msg, enc_buf, needed, &enc_len) != 0) {
         g_printerr("send_response: encode failed\n");
+        g_free(enc_buf);
         return;
     }
 
     struct ble_pack_iter it;
     if (ble_pack_iter_init(&it, enc_buf, (uint32_t)enc_len, DEFAULT_ATT_PAYLOAD) != 0) {
         g_printerr("send_response: pack init failed\n");
+        g_free(enc_buf);
         return;
     }
 
@@ -131,6 +143,64 @@ static void send_response(uint16_t type, const void *msg)
     while (ble_pack_iter_next(&it, frame, sizeof(frame), &frame_len) > 0) {
         tx_notify(frame, frame_len);
     }
+    g_free(enc_buf);
+}
+
+/* Run casync list-chunks on the caibx we just received and push
+ * the result to the phone as a MissingChunks notification. */
+static void after_caibx_send_missing_chunks(const char *caibx_path)
+{
+    char *content = NULL;
+    size_t len = 0;
+    const char *err = "";
+
+    int rc = casync_list_chunks(caibx_path, &content, &len, &err);
+    void *msg;
+    if (rc != 0) {
+        g_printerr("casync list-chunks failed: %s\n", err);
+        msg = ble_app_missing_chunks_new(0, err, NULL, 0);
+    } else {
+        g_print("casync list-chunks: %zu bytes\n", len);
+        msg = ble_app_missing_chunks_new(1, "", (const uint8_t *)content, len);
+    }
+    send_response(BLE_APP_MISSING_CHUNKS, msg);
+    ble_app_free(BLE_APP_MISSING_CHUNKS, msg);
+    g_free(content);
+}
+
+/* Run casync extract → verify sha256 → rauc install. */
+static void perform_install(const uint8_t *expected_sha256,
+                            size_t expected_len,
+                            int *ok, const char **error)
+{
+    *ok = 0;
+    *error = "";
+
+    if (expected_len != 32) { *error = "sha256 must be 32 bytes"; return; }
+
+    const char *err = "";
+    if (casync_extract("/tmp/rootfs.caibx",
+                       "/tmp/rootfs.castr",
+                       "/tmp/rootfs.raucb", &err) != 0) {
+        *error = err[0] ? err : "casync extract failed";
+        return;
+    }
+
+    uint8_t digest[32];
+    if (sha256_file("/tmp/rootfs.raucb", digest, &err) != 0) {
+        *error = err[0] ? err : "sha256 failed";
+        return;
+    }
+    if (memcmp(digest, expected_sha256, 32) != 0) {
+        *error = "sha256 mismatch";
+        return;
+    }
+
+    if (rauc_install("/tmp/rootfs.raucb", &err) != 0) {
+        *error = err[0] ? err : "rauc install failed";
+        return;
+    }
+    *ok = 1;
 }
 
 /* Handle a fully reassembled message. */
@@ -192,9 +262,34 @@ static void handle_message(const uint8_t *msg, uint32_t len)
 
         if (ok) {
             const char *path = ota_ctx_path(g_ota);
-            g_print("OTA complete: %s\n", path ? path : "(null)");
-            /* TODO: invoke RAUC D-Bus Install(path) here */
+            const char *fname = ota_ctx_filename(g_ota);
+            g_print("OTA file complete: %s\n", path ? path : "(null)");
+
+            if (fname && g_strcmp0(fname, "rootfs.caibx") == 0 && path) {
+                after_caibx_send_missing_chunks(path);
+            }
         }
+        break;
+    }
+
+    case BLE_APP_GET_VERSION: {
+        char *version = firmware_version_read();
+        void *reply = ble_app_version_reply_new(version);
+        send_response(BLE_APP_VERSION_REPLY, reply);
+        ble_app_free(BLE_APP_VERSION_REPLY, reply);
+        free(version);
+        break;
+    }
+
+    case BLE_APP_OTA_INSTALL: {
+        size_t sha_len = 0;
+        const uint8_t *sha = ble_app_ota_install_sha256(decoded, &sha_len);
+        int ok = 0;
+        const char *error = "";
+        perform_install(sha, sha_len, &ok, &error);
+        void *reply = ble_app_ota_install_reply_new(ok, error);
+        send_response(BLE_APP_OTA_INSTALL_REPLY, reply);
+        ble_app_free(BLE_APP_OTA_INSTALL_REPLY, reply);
         break;
     }
 

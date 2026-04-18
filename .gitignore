@@ -1,2 +1,11 @@
 .claude/
 rauc-ble-otad.si4project/
+
+# Build artifacts
+*.o
+/rauc-ble-otad
+proto/app.pb.cc
+proto/app.pb.h
+tests/test_ble_pack
+tests/test_ble_reasm
+tests/test_app_dispatch
