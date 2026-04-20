@@ -9,3 +9,7 @@ proto/app.pb.h
 tests/test_ble_pack
 tests/test_ble_reasm
 tests/test_app_dispatch
+
+# Python client
+tools/app_pb2.py
+tools/__pycache__/

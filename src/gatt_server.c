@@ -60,12 +60,27 @@ static struct ota_ctx *g_ota;
 /* TX notification state */
 static gboolean g_tx_notifying;
 
+/* Debug: when non-zero, every RX/TX frame is hex-dumped. Set via
+ * OTA_LOG_HEX env var at startup. */
+static int g_log_hex;
+
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
 /* ------------------------------------------------------------------ */
 static uint64_t now_ms(void)
 {
     return (uint64_t)(g_get_monotonic_time() / 1000);
+}
+
+static void log_hex_frame(const char *tag, const uint8_t *data, size_t len)
+{
+    if (!g_log_hex) return;
+    GString *s = g_string_sized_new(len * 2 + 16);
+    g_string_append_printf(s, "%s (%zuB): ", tag, len);
+    for (size_t i = 0; i < len; i++)
+        g_string_append_printf(s, "%02x", data[i]);
+    g_print("%s\n", s->str);
+    g_string_free(s, TRUE);
 }
 
 static GVariant *make_byte_array(const uint8_t *data, size_t len)
@@ -83,6 +98,8 @@ static GVariant *make_byte_array(const uint8_t *data, size_t len)
 static void tx_notify(const uint8_t *pdu, size_t len)
 {
     if (!g_tx_notifying || !g_conn) return;
+
+    log_hex_frame("tx frame", pdu, len);
 
     GVariantBuilder changed;
     g_variant_builder_init(&changed, G_VARIANT_TYPE("a{sv}"));
@@ -117,6 +134,10 @@ static void tx_notify(const uint8_t *pdu, size_t len)
  * are fine; small messages still go through with one small malloc. */
 static void send_response(uint16_t type, const void *msg)
 {
+    char desc[256];
+    ble_app_describe(type, msg, desc, sizeof(desc));
+    g_print("tx: %s\n", desc);
+
     size_t needed = ble_app_encoded_size(type, msg);
     if (needed == 0) {
         g_printerr("send_response: empty encoded size\n");
@@ -214,7 +235,11 @@ static void handle_message(const uint8_t *msg, uint32_t len)
         return;
     }
 
-    g_print("handle_message: type=0x%04x len=%u\n", type, len);
+    {
+        char desc[256];
+        ble_app_describe(type, decoded, desc, sizeof(desc));
+        g_print("rx: %s\n", desc);
+    }
 
     switch (type) {
     case BLE_APP_PING:
@@ -472,6 +497,8 @@ static void handle_rx_write(GDBusConnection *conn,
     const guint8 *pdu = g_variant_get_fixed_array(value_var, &pdu_len,
                                                    sizeof(guint8));
 
+    log_hex_frame("rx frame", pdu, pdu_len);
+
     const uint8_t *out_msg = NULL;
     uint32_t out_len = 0;
     int rc = ble_reasm_feed(&g_reasm, pdu, pdu_len, now_ms(),
@@ -718,8 +745,16 @@ int gatt_server_start(GDBusConnection *conn, const char *adapter_path)
 
     g_conn = conn;
 
+    /* Env-driven debug switches */
+    g_log_hex = (getenv("OTA_LOG_HEX") != NULL);
+    if (g_log_hex) g_print("debug: OTA_LOG_HEX enabled (frame hex dumps on)\n");
+
+    const char *env_to = getenv("OTA_REASM_TIMEOUT_MS");
+    uint32_t reasm_to = env_to ? (uint32_t)atoi(env_to) : 5000;
+    if (env_to) g_print("debug: OTA_REASM_TIMEOUT_MS=%u\n", reasm_to);
+
     /* Init reassembler */
-    ble_reasm_init(&g_reasm, g_reasm_buf, sizeof(g_reasm_buf), 5000);
+    ble_reasm_init(&g_reasm, g_reasm_buf, sizeof(g_reasm_buf), reasm_to);
 
     /* Init OTA handler — received files go to /tmp */
     g_ota = ota_ctx_new("/tmp");

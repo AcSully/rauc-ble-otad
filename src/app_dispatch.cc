@@ -2,6 +2,7 @@
 #include "app.pb.h"
 
 #include <google/protobuf/message_lite.h>
+#include <cstdio>
 
 namespace {
 
@@ -163,4 +164,141 @@ extern "C" void *ble_app_ota_install_reply_new(int ok, const char *error)
     m->set_ok(ok != 0);
     if (error && error[0]) m->set_error(error);
     return m;
+}
+
+/* ---- human-readable describe ---- */
+
+namespace {
+
+const char *type_name(uint16_t type)
+{
+    switch (type) {
+    case BLE_APP_PING:              return "PING";
+    case BLE_APP_PONG:              return "PONG";
+    case BLE_APP_OTA_BEGIN:         return "OTA_BEGIN";
+    case BLE_APP_OTA_BEGIN_ACK:     return "OTA_BEGIN_ACK";
+    case BLE_APP_OTA_CHUNK:         return "OTA_CHUNK";
+    case BLE_APP_OTA_CHUNK_ACK:     return "OTA_CHUNK_ACK";
+    case BLE_APP_OTA_END:           return "OTA_END";
+    case BLE_APP_OTA_END_ACK:       return "OTA_END_ACK";
+    case BLE_APP_GET_VERSION:       return "GET_VERSION";
+    case BLE_APP_VERSION_REPLY:     return "VERSION_REPLY";
+    case BLE_APP_MISSING_CHUNKS:    return "MISSING_CHUNKS";
+    case BLE_APP_OTA_INSTALL:       return "OTA_INSTALL";
+    case BLE_APP_OTA_INSTALL_REPLY: return "OTA_INSTALL_REPLY";
+    default:                        return "UNKNOWN";
+    }
+}
+
+int clamp_written(int n, size_t cap)
+{
+    if (n < 0) return 0;
+    if ((size_t)n >= cap) return (int)(cap - 1);
+    return n;
+}
+
+} // namespace
+
+extern "C" int ble_app_describe(uint16_t type, const void *msg,
+                                char *buf, size_t cap)
+{
+    if (!buf || cap == 0) return 0;
+    buf[0] = '\0';
+    const char *name = type_name(type);
+    int n = 0;
+
+    switch (type) {
+    case BLE_APP_PING: {
+        const auto *m = static_cast<const ble::app::Ping *>(msg);
+        n = std::snprintf(buf, cap, "%s nonce=%llu", name,
+                          (unsigned long long)m->nonce());
+        break;
+    }
+    case BLE_APP_PONG: {
+        const auto *m = static_cast<const ble::app::Pong *>(msg);
+        n = std::snprintf(buf, cap, "%s nonce=%llu", name,
+                          (unsigned long long)m->nonce());
+        break;
+    }
+    case BLE_APP_OTA_BEGIN: {
+        const auto *m = static_cast<const ble::app::OtaBegin *>(msg);
+        n = std::snprintf(buf, cap,
+                          "%s filename=\"%s\" total_size=%llu chunk_size=%u",
+                          name, m->filename().c_str(),
+                          (unsigned long long)m->total_size(),
+                          m->chunk_size());
+        break;
+    }
+    case BLE_APP_OTA_BEGIN_ACK: {
+        const auto *m = static_cast<const ble::app::OtaBeginAck *>(msg);
+        n = std::snprintf(buf, cap, "%s ok=%s error=\"%s\"",
+                          name, m->ok() ? "true" : "false",
+                          m->error().c_str());
+        break;
+    }
+    case BLE_APP_OTA_CHUNK: {
+        const auto *m = static_cast<const ble::app::OtaChunk *>(msg);
+        n = std::snprintf(buf, cap, "%s seq=%u data_len=%zu",
+                          name, m->seq(), m->data().size());
+        break;
+    }
+    case BLE_APP_OTA_CHUNK_ACK: {
+        const auto *m = static_cast<const ble::app::OtaChunkAck *>(msg);
+        n = std::snprintf(buf, cap, "%s seq=%u ok=%s",
+                          name, m->seq(), m->ok() ? "true" : "false");
+        break;
+    }
+    case BLE_APP_OTA_END: {
+        const auto *m = static_cast<const ble::app::OtaEnd *>(msg);
+        n = std::snprintf(buf, cap, "%s crc64=%llu", name,
+                          (unsigned long long)m->crc64());
+        break;
+    }
+    case BLE_APP_OTA_END_ACK: {
+        const auto *m = static_cast<const ble::app::OtaEndAck *>(msg);
+        n = std::snprintf(buf, cap, "%s ok=%s error=\"%s\"",
+                          name, m->ok() ? "true" : "false",
+                          m->error().c_str());
+        break;
+    }
+    case BLE_APP_GET_VERSION:
+        n = std::snprintf(buf, cap, "%s", name);
+        break;
+    case BLE_APP_VERSION_REPLY: {
+        const auto *m = static_cast<const ble::app::VersionReply *>(msg);
+        n = std::snprintf(buf, cap, "%s version=\"%s\"",
+                          name, m->version().c_str());
+        break;
+    }
+    case BLE_APP_MISSING_CHUNKS: {
+        const auto *m = static_cast<const ble::app::MissingChunks *>(msg);
+        n = std::snprintf(buf, cap,
+                          "%s ok=%s error=\"%s\" content_len=%zu",
+                          name, m->ok() ? "true" : "false",
+                          m->error().c_str(), m->content().size());
+        break;
+    }
+    case BLE_APP_OTA_INSTALL: {
+        const auto *m = static_cast<const ble::app::OtaInstall *>(msg);
+        const auto &d = m->sha256();
+        char hex[65] = {0};
+        size_t limit = d.size() > 32 ? 32 : d.size();
+        for (size_t i = 0; i < limit; i++)
+            std::snprintf(hex + i * 2, 3, "%02x", (uint8_t)d[i]);
+        n = std::snprintf(buf, cap, "%s sha256=%s", name, hex);
+        break;
+    }
+    case BLE_APP_OTA_INSTALL_REPLY: {
+        const auto *m = static_cast<const ble::app::OtaInstallReply *>(msg);
+        n = std::snprintf(buf, cap, "%s ok=%s error=\"%s\"",
+                          name, m->ok() ? "true" : "false",
+                          m->error().c_str());
+        break;
+    }
+    default:
+        n = std::snprintf(buf, cap, "UNKNOWN(0x%04x)", type);
+        break;
+    }
+
+    return clamp_written(n, cap);
 }

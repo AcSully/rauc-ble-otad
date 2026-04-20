@@ -37,6 +37,12 @@ void ble_app_free(uint16_t type, void *msg);
 /* Protobuf serialized size (app payload, including 2-byte type header). */
 size_t ble_app_encoded_size(uint16_t type, const void *msg);
 
+/* Write a one-line human-readable summary of the decoded message into buf.
+ * Output format: "TYPE_NAME field=value field=value". Long fields (bytes)
+ * are truncated. Returns number of chars written (excluding NUL), clamped
+ * to cap-1. buf is always NUL-terminated when cap > 0. */
+int ble_app_describe(uint16_t type, const void *msg, char *buf, size_t cap);
+
 /* ---- C-accessible field getters ---- */
 
 const char *ble_app_ota_begin_filename(const void *msg);
